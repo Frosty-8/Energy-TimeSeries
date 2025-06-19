@@ -10,3 +10,4 @@ wheels/
 .venv
 dataset
 model.json
+acc_score.py

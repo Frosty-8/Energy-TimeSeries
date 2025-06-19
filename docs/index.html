@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energy Consumption Forecasting Documentation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+            background-color: #f9f9f9;
+        }
+        h1, h2, h3 {
+            color: #2c3e50;
+        }
+        pre {
+            background-color: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            position: relative;
+            margin: 10px 0;
+        }
+        code {
+            font-family: Consolas, monospace;
+        }
+        ul {
+            margin: 10px 0;
+        }
+        a {
+            color: #2980b9;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+        a:hover {
+            color: #1c5d8a;
+            text-decoration: underline;
+        }
+        .note {
+            background-color: #e7f3fe;
+            border-left: 4px solid #2980b9;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .copy-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: #2980b9;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+        }
+        .copy-button:hover {
+            background-color: #1c5d8a;
+            transform: scale(1.05);
+        }
+        .copy-button:active {
+            transform: scale(0.95);
+        }
+    </style>
+</head>
+<body>
+    <h1>Energy Consumption Forecasting with XGBoost</h1>
+    <p>This document outlines the development pipeline for an energy consumption forecasting model built using XGBoost and time series analysis. The project processes hourly energy consumption data, applies feature engineering, and uses time-based cross-validation to predict future energy usage.</p>
+
+    <h2>Table of Contents</h2>
+    <ul>
+        <li><a href="#data-preprocessing">Data Preprocessing</a></li>
+        <li><a href="#feature-engineering">Feature Engineering</a></li>
+        <li><a href="#model-architecture">Model Architecture</a></li>
+        <li><a href="#training">Training</a></li>
+        <li><a href="#evaluation">Evaluation</a></li>
+        <li><a href="#best-practices">Best Practices and Future Improvements</a></li>
+    </ul>
+
+    <h2 id="data-preprocessing">Data Preprocessing</h2>
+    <p>The dataset, sourced from <a href="https://www.kaggle.com/datasets/robikscube/hourly-energy-consumption">Kaggle</a>, contains hourly energy consumption data (PJME_MW) for the PJM Interconnection. The data is preprocessed to ensure quality and compatibility with time series modeling.</p>
+    <ul>
+        <li><strong>Loading Data:</strong> The dataset is loaded using pandas, with the 'Datetime' column set as the index and converted to a datetime format.</li>
+        <li><strong>Outlier Removal:</strong> Entries with energy consumption below 19,000 MW are identified as outliers and removed to improve model robustness.</li>
+        <li><strong>Train-Test Split:</strong> The data is split into training (before January 1, 2014) and testing (on or after January 1, 2014) sets for evaluation.</li>
+    </ul>
+    <p><strong>Copy Code</strong></p>
+    <pre><code id="code-preprocessing">import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+df = pd.read_csv('dataset/PJME_hourly.csv')
+df = df.set_index('Datetime')
+df.index = pd.to_datetime(df.index)
+
+# Visualize raw data
+df.plot(style='.', figsize=(12,6), color=sns.color_palette()[1], title='Hourly Energy Consumption')
+plt.show()
+
+# Remove outliers
+df = df.query('PJME_MW > 19000').copy()
+
+# Train-test split
+train = df.loc[df.index < '01-01-2014']
+test = df.loc[df.index >= '01-01-2014']
+
+fig, ax = plt.subplots(figsize=(12,6))
+train.plot(ax=ax, title='Training Set')
+test.plot(ax=ax, title='Test Set')
+ax.axvline('01-01-2014', color='black', ls='--')
+ax.legend(['Training Set', 'Test Set'])
+plt.show()
+</code><button class="copy-button" onclick="copyCode('code-preprocessing')">Copy Code</button></pre>
+    <p><strong>Additional Considerations:</strong></p>
+    <ul>
+        <li><strong>Data Integrity:</strong> Verify timestamp continuity to handle missing or duplicate entries.</li>
+        <li><strong>Visualization:</strong> Plotting histograms and time series helps identify anomalies and trends.</li>
+        <li><strong>Scalability:</strong> For larger datasets, consider using Dask or chunked processing to handle memory constraints.</li>
+    </ul>
+    <div class="note">
+        <p><strong>Note:</strong> Visualizing outliers and splits ensures the data is correctly preprocessed before modeling.</p>
+    </div>
+
+    <h2 id="feature-engineering">Feature Engineering</h2>
+    <p>Feature engineering is critical for capturing temporal patterns in energy consumption. Two main types of features are created:</p>
+    <ul>
+        <li><strong>Temporal Features:</strong> Extracted from the datetime index, including hour, day of week, month, quarter, year, day of year, day of month, and week of year.</li>
+        <li><strong>Lag Features:</strong> Historical consumption values from 364, 728, and 1092 days prior to capture yearly seasonality.</li>
+    </ul>
+    <p><strong>Copy Code</strong></p>
+    <pre><code id="code-features">def create_features(df):
+    df = df.copy()
+    df['hour'] = df.index.hour
+    df['dayofweek'] = df.index.dayofweek
+    df['quarter'] = df.index.quarter
+    df['month'] = df.index.month
+    df['year'] = df.index.year
+    df['dayofyear'] = df.index.dayofyear
+    df['dayofmonth'] = df.index.day
+    df['weekofyear'] = df.index.isocalendar().week
+    return df
+
+def add_lags(df):
+    target_map = df['PJME_MW'].to_dict()
+    df['lag1'] = (df.index - pd.Timedelta('364 days')).map(target_map)
+    df['lag2'] = (df.index - pd.Timedelta('728 days')).map(target_map)
+    df['lag3'] = (df.index - pd.Timedelta('1092 days')).map(target_map)
+    return df
+
+df = create_features(df)
+df = add_lags(df)
+</code><button class="copy-button" onclick="copyCode('code-features')">Copy Code</button></pre>
+    <p><strong>Insights:</strong></p>
+    <ul>
+        <li><strong>Temporal Features:</strong> Capture cyclical patterns like daily or seasonal trends.</li>
+        <li><strong>Lag Features:</strong> Account for long-term dependencies, crucial for energy consumption forecasting.</li>
+        <li><strong>Improvements:</strong> Consider rolling statistics (e.g., moving averages) or additional lags for finer granularity.</li>
+    </ul>
+
+    <h2 id="model-architecture">Model Architecture</h2>
+    <p>The model uses an <strong>XGBoost Regressor</strong>, a gradient-boosting framework optimized for regression tasks. Key parameters include:</p>
+    <ul>
+        <li><strong>n_estimators:</strong> 500–1000 (tuned for performance).</li>
+        <li><strong>max_depth:</strong> 3 (limits tree complexity to prevent overfitting).</li>
+        <li><strong>learning_rate:</strong> 0.01 (slow learning for better convergence).</li>
+        <li><strong>early_stopping_rounds:</strong> 50 (halts training if performance plateaus).</li>
+        <li><strong>objective:</strong> reg:linear (for regression).</li>
+    </ul>
+    <p><strong>Copy Code</strong></p>
+    <pre><code id="code-model">import xgboost as xgb
+
+reg = xgb.XGBRegressor(
+    base_score=0.5,
+    booster='gbtree',
+    n_estimators=1000,
+    early_stopping_rounds=50,
+    objective='reg:linear',
+    max_depth=3,
+    learning_rate=0.01
+)
+</code><button class="copy-button" onclick="copyCode('code-model')">Copy Code</button></pre>
+    <p><strong>Architecture Insights:</strong></p>
+    <ul>
+        <li><strong>Gradient Boosting:</strong> Combines weak learners (decision trees) to model complex relationships.</li>
+        <li><strong>Feature Importance:</strong> Analyze feature importance to identify key predictors (e.g., lag features).</li>
+        <li><strong>Improvements:</strong> Experiment with hyperparameters using grid search or Bayesian optimization.</li>
+    </ul>
+
+    <h2 id="training">Training</h2>
+    <p>The model is trained using time-based cross-validation with <strong>TimeSeriesSplit</strong> (5–6 folds, 1-year test size, 30-day gap) to respect temporal order. The final model is trained on the entire dataset for future predictions.</p>
+    <p><strong>Copy Code</strong></p>
+    <pre><code id="code-training">from sklearn.model_selection import TimeSeriesSplit
+
+tss = TimeSeriesSplit(n_splits=5, test_size=24*365*1, gap=24)
+FEATURES = ['dayofyear', 'hour', 'dayofweek', 'quarter', 'month', 'year', 'lag1', 'lag2', 'lag3']
+TARGET = 'PJME_MW'
+
+for train_idx, val_idx in tss.split(df):
+    train = df.iloc[train_idx]
+    test = df.iloc[val_idx]
+    train = create_features(train)
+    test = create_features(test)
+    X_train = train[FEATURES]
+    y_train = train[TARGET]
+    X_test = test[FEATURES]
+    y_test = test[TARGET]
+    reg.fit(X_train, y_train, eval_set=[(X_train, y_train), (X_test, y_test)], verbose=100)
+</code><button class="copy-button" onclick="copyCode('code-training')">Copy Code</button></pre>
+    <p><strong>Training Details:</strong></p>
+    <ul>
+        <li><strong>TimeSeriesSplit:</strong> Ensures no future data leaks into training folds.</li>
+        <li><strong>Early Stopping:</strong> Prevents overfitting by monitoring validation loss.</li>
+        <li><strong>Visualization:</strong> Plots of training and testing folds help validate the split strategy.</li>
+    </ul>
+
+    <h2 id="evaluation">Evaluation</h2>
+    <p>The model’s performance is evaluated using the root mean squared error (RMSE) across cross-validation folds. The average RMSE is reported, and future predictions are generated for a one-year horizon (2018-08-03 to 2019-08-01).</p>
+    <p><strong>Copy Code</strong></p>
+    <pre><code id="code-evaluation">from sklearn.metrics import mean_squared_error
+import numpy as np
+
+preds = []
+scores = []
+for train_idx, val_idx in tss.split(df):
+    # ... (training code)
+    y_pred = reg.predict(X_test)
+    score = np.sqrt(mean_squared_error(y_test, y_pred))
+    scores.append(score)
+
+print(f'Score across folds {np.mean(scores):0.4f}')
+print(f'Fold scores: {scores}')
+
+# Future predictions
+future = pd.date_range('2018-08-03', '2019-08-01', freq='1h')
+future_df = pd.DataFrame(index=future)
+future_df['isFuture'] = True
+df['isFuture'] = False
+df_and_future = pd.concat([df, future_df])
+df_and_future = create_features(df_and_future)
+df_and_future = add_lags(df_and_future)
+future_w_features = df_and_future.query('isFuture').copy()
+future_w_features['pred'] = reg.predict(future_w_features[FEATURES])
+
+future_w_features['pred'].plot(figsize=(10, 5), color=sns.color_palette()[4], title='Future Predictions')
+plt.show()
+</code><button class="copy-button" onclick="copyCode('code-evaluation')">Copy Code</button></pre>
+    <p><strong>Evaluation Insights:</strong></p>
+    <ul>
+        <li><strong>RMSE:</strong> Provides a measure of prediction accuracy in the same units as the target variable.</li>
+        <li><strong>Future Predictions:</strong> Visualized to assess forecast trends and anomalies.</li>
+        <li><strong>Additional Metrics:</strong> Consider mean absolute error (MAE) or mean absolute percentage error (MAPE) for further insights.</li>
+    </ul>
+
+    <h2 id="best-practices">Best Practices and Future Improvements</h2>
+    <p><strong>Best Practices:</strong></p>
+    <ul>
+        <li><strong>Data Quality:</strong> Ensure clean, continuous time series data with no missing timestamps.</li>
+        <li><strong>Feature Engineering:</strong> Include domain-specific features (e.g., weather data) for better predictions.</li>
+        <li><strong>Cross-Validation:</strong> Use time-based splits to maintain temporal integrity.</li>
+        <li><strong>Visualization:</strong> Leverage tools like Matplotlib and Seaborn for data exploration and result validation.</li>
+        <li><strong>Model Interpretability:</strong> Use SHAP or feature importance plots to understand model decisions.</li>
+    </ul>
+    <p><strong>Future Improvements:</strong></p>
+    <ul>
+        <li><strong>Hyperparameter Tuning:</strong> Use tools like Optuna or GridSearchCV for optimal XGBoost parameters.</li>
+        <li><strong>Additional Features:</strong> Incorporate external factors like temperature or holidays.</li>
+        <li><strong>Alternative Models:</strong> Experiment with LSTM or Prophet for time series forecasting.</li>
+        <li><strong>Ensemble Methods:</strong> Combine XGBoost with other models for improved accuracy.</li>
+        <li><strong>Scalability:</strong> Optimize for larger datasets using distributed computing frameworks.</li>
+    </ul>
+
+    <p><strong>Dependencies:</strong> Key libraries include <code>xgboost</code>, <code>pandas</code>, <code>numpy</code>, <code>matplotlib</code>, <code>seaborn</code>, <code>scikit-learn</code>, <code>rich</code>, and <code>kagglehub</code>. See <code>pyproject.toml</code> for details.</p>
+
+    <p><strong>Dataset:</strong> Hourly energy consumption data from PJM Interconnection, available via <code>main.py</code> using KaggleHub.</p>
+
+    <p><strong>Author:</strong> <a href="https://github.com/frosty-8">@frosty-8</a><br>
+    <strong>License:</strong> MIT</p>
+
+    <p>© 2025 Energy Consumption Forecasting Project</p>
+
+    <script>
+        function copyCode(codeId) {
+            const codeElement = document.getElementById(codeId);
+            const text = codeElement.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Code copied to clipboard!');
+            }).catch(err => {
+                console.error('Failed to copy code: ', err);
+            });
+        }
+    </script>
+</body>
+</html>
